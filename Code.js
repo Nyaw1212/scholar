@@ -13,6 +13,7 @@ function onOpen() {
     .addItem('Find Abstract', 'findSelectedAbstract')
     .addSeparator()
     .addItem('Generate Document', 'generateSelectedDocument')
+    .addItem('Generate Combined Report', 'generateCombinedReport')
     .addToUi();
 }
 
@@ -93,16 +94,7 @@ function generateSelectedDocument() {
   const doc = DocumentApp.create(docTitle);
   const body = doc.getBody();
 
-  // Requested output format:
-  // citation
-  // blank line
-  // abstract
-  // No headings and no numbering.
-  const citationParagraph = body.appendParagraph(citation);
-  citationParagraph.setSpacingAfter(12);
-
-  const abstractParagraph = body.appendParagraph(abstract);
-  abstractParagraph.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
+  appendCitationAndAbstract_(body, citation, abstract);
 
   doc.saveAndClose();
 
@@ -111,6 +103,69 @@ function generateSelectedDocument() {
   sheet.getRange(row, 4).setValue('Document created');
 
   SpreadsheetApp.getUi().alert('Document created successfully.');
+}
+
+function generateCombinedReport() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    throw new Error('No research rows found.');
+  }
+
+  const rows = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+  const validRows = rows.filter(row => {
+    const citation = String(row[0] || '').trim();
+    const abstract = String(row[2] || '').trim();
+    return citation && abstract;
+  });
+
+  if (!validRows.length) {
+    throw new Error('No rows contain both a citation and an abstract.');
+  }
+
+  const timestamp = Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    'yyyy-MM-dd HHmm'
+  );
+
+  const doc = DocumentApp.create('Scholar Combined Report - ' + timestamp);
+  const body = doc.getBody();
+
+  validRows.forEach((row, index) => {
+    const citation = String(row[0] || '').trim();
+    const abstract = String(row[2] || '').trim();
+
+    appendCitationAndAbstract_(body, citation, abstract);
+
+    if (index < validRows.length - 1) {
+      body.appendParagraph('');
+      body.appendHorizontalRule();
+      body.appendParagraph('');
+    }
+  });
+
+  doc.saveAndClose();
+
+  const url = doc.getUrl();
+
+  // Put the combined report link in E1 so it is easy to find and does not
+  // overwrite any individual row document links.
+  sheet.getRange('E1').setFormula('=HYPERLINK("' + url + '","Open Combined Report")');
+
+  SpreadsheetApp.getUi().alert(
+    'Combined report created with ' + validRows.length + ' research entr' +
+    (validRows.length === 1 ? 'y.' : 'ies.')
+  );
+}
+
+function appendCitationAndAbstract_(body, citation, abstract) {
+  const citationParagraph = body.appendParagraph(citation);
+  citationParagraph.setSpacingAfter(12);
+
+  const abstractParagraph = body.appendParagraph(abstract);
+  abstractParagraph.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
 }
 
 function searchSemanticScholarMatch_(title) {
