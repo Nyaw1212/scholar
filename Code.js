@@ -2,7 +2,8 @@ const SCHOLAR_HEADERS = [
   'Title / Citation',
   'Matched Title',
   'Abstract',
-  'Status'
+  'Status',
+  'Document Link'
 ];
 
 function onOpen() {
@@ -10,6 +11,8 @@ function onOpen() {
     .createMenu('Scholar Tools')
     .addItem('Setup Sheet', 'setupScholarSheet')
     .addItem('Find Abstract', 'findSelectedAbstract')
+    .addSeparator()
+    .addItem('Generate Document', 'generateSelectedDocument')
     .addToUi();
 }
 
@@ -61,6 +64,53 @@ function findSelectedAbstract() {
     sheet.getRange(row, 4).setValue(status);
     throw err;
   }
+}
+
+function generateSelectedDocument() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const row = sheet.getActiveRange().getRow();
+
+  if (row < 2) {
+    throw new Error('Select the research row you want to generate.');
+  }
+
+  const citation = String(sheet.getRange(row, 1).getValue() || '').trim();
+  const abstract = String(sheet.getRange(row, 3).getValue() || '').trim();
+
+  if (!citation) {
+    throw new Error('Column A does not contain a citation.');
+  }
+
+  if (!abstract) {
+    throw new Error('No abstract found in Column C. Run "Find Abstract" first.');
+  }
+
+  const parsed = parseCitationInput_(citation);
+  const docTitle = parsed.title
+    ? 'Research - ' + parsed.title
+    : 'Research Abstract';
+
+  const doc = DocumentApp.create(docTitle);
+  const body = doc.getBody();
+
+  // Requested output format:
+  // citation
+  // blank line
+  // abstract
+  // No headings and no numbering.
+  const citationParagraph = body.appendParagraph(citation);
+  citationParagraph.setSpacingAfter(12);
+
+  const abstractParagraph = body.appendParagraph(abstract);
+  abstractParagraph.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
+
+  doc.saveAndClose();
+
+  const url = doc.getUrl();
+  sheet.getRange(row, 5).setFormula('=HYPERLINK("' + url + '","Open Document")');
+  sheet.getRange(row, 4).setValue('Document created');
+
+  SpreadsheetApp.getUi().alert('Document created successfully.');
 }
 
 function searchSemanticScholarMatch_(title) {
