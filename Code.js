@@ -92,7 +92,6 @@ function findAllAbstracts() {
       sheet.getRange(sheetRow, 4).setValue(getErrorStatus_(err));
     }
 
-    // Gentle pacing between papers so we do not hammer the public API.
     Utilities.sleep(1200);
   }
 
@@ -178,10 +177,17 @@ function generateCombinedReport() {
   }
 
   const rows = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
-  const validRows = rows.filter(row => {
+  const validRows = [];
+  const includedSheetRows = [];
+
+  rows.forEach((row, index) => {
     const citation = String(row[0] || '').trim();
     const abstract = String(row[2] || '').trim();
-    return citation && abstract;
+
+    if (citation && abstract) {
+      validRows.push(row);
+      includedSheetRows.push(index + 2);
+    }
   });
 
   if (!validRows.length) {
@@ -214,6 +220,12 @@ function generateCombinedReport() {
 
   const url = doc.getUrl();
   sheet.getRange('E1').setFormula('=HYPERLINK("' + url + '","Open Combined Report")');
+
+  // Mark only the rows that were actually included in the combined report.
+  includedSheetRows.forEach(sheetRow => {
+    sheet.getRange(sheetRow, 4).setValue('Included in combined report');
+  });
+  SpreadsheetApp.flush();
 
   SpreadsheetApp.getUi().alert(
     'Combined report created with ' + validRows.length + ' research entr' +
@@ -259,7 +271,6 @@ function searchSemanticScholarMatch_(title) {
       return payload && payload.data ? payload.data[0] || null : null;
     }
 
-    // Retry only rate-limit and temporary server errors.
     if (code !== 429 && code < 500) {
       throw new Error('Semantic Scholar returned HTTP ' + code + ': ' + text);
     }
