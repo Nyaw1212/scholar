@@ -11,6 +11,7 @@ function onOpen() {
     .createMenu('Scholar Tools')
     .addItem('Setup Sheet', 'setupScholarSheet')
     .addItem('Find Abstract', 'findSelectedAbstract')
+    .addItem('Find All Abstracts', 'findAllAbstracts')
     .addSeparator()
     .addItem('Generate Document', 'generateSelectedDocument')
     .addItem('Generate Combined Report', 'generateCombinedReport')
@@ -38,33 +39,96 @@ function findSelectedAbstract() {
     throw new Error('Column A does not contain a title or citation.');
   }
 
-  const parsed = parseCitationInput_(rawInput);
-  const searchTitle = parsed.title || rawInput;
-
   sheet.getRange(row, 4).setValue('Searching...');
+  SpreadsheetApp.flush();
 
   try {
-    const result = searchSemanticScholarMatch_(searchTitle);
-
-    if (!result) {
-      sheet.getRange(row, 2, 1, 3).setValues([['', '', 'No match found']]);
-      return;
-    }
-
-    sheet.getRange(row, 2, 1, 3).setValues([[
-      result.title || '',
-      result.abstract || '',
-      result.abstract ? 'Abstract found' : 'Matched - no abstract available'
-    ]]);
+    const result = fetchAbstractForCitation_(rawInput);
+    writeAbstractResult_(sheet, row, result);
   } catch (err) {
-    const message = String(err && err.message ? err.message : err);
-    const status = message.includes('HTTP 429')
-      ? 'Rate limited - try again shortly'
-      : 'Error';
-
+    const status = getErrorStatus_(err);
     sheet.getRange(row, 4).setValue(status);
     throw err;
   }
+}
+
+function findAllAbstracts() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    throw new Error('No citation rows found.');
+  }
+
+  const rows = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  let found = 0;
+  let skipped = 0;
+  let noAbstract = 0;
+  let failed = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const sheetRow = i + 2;
+    const citation = String(rows[i][0] || '').trim();
+    const existingAbstract = String(rows[i][2] || '').trim();
+
+    if (!citation) continue;
+
+    if (existingAbstract) {
+      skipped++;
+      continue;
+    }
+
+    sheet.getRange(sheetRow, 4).setValue('Searching...');
+    SpreadsheetApp.flush();
+
+    try {
+      const result = fetchAbstractForCitation_(citation);
+      writeAbstractResult_(sheet, sheetRow, result);
+
+      if (result && result.abstract) found++;
+      else noAbstract++;
+    } catch (err) {
+      failed++;
+      sheet.getRange(sheetRow, 4).setValue(getErrorStatus_(err));
+    }
+
+    // Gentle pacing between papers so we do not hammer the public API.
+    Utilities.sleep(1200);
+  }
+
+  SpreadsheetApp.getUi().alert(
+    'Batch search finished.\n' +
+    'Abstracts found: ' + found + '\n' +
+    'Already filled / skipped: ' + skipped + '\n' +
+    'Matched but no abstract: ' + noAbstract + '\n' +
+    'Failed: ' + failed
+  );
+}
+
+function fetchAbstractForCitation_(rawInput) {
+  const parsed = parseCitationInput_(rawInput);
+  const searchTitle = parsed.title || rawInput;
+  return searchSemanticScholarMatch_(searchTitle);
+}
+
+function writeAbstractResult_(sheet, row, result) {
+  if (!result) {
+    sheet.getRange(row, 2, 1, 3).setValues([['', '', 'No match found']]);
+    return;
+  }
+
+  sheet.getRange(row, 2, 1, 3).setValues([[
+    result.title || '',
+    result.abstract || '',
+    result.abstract ? 'Abstract found' : 'Matched - no abstract available'
+  ]]);
+}
+
+function getErrorStatus_(err) {
+  const message = String(err && err.message ? err.message : err);
+  if (message.includes('HTTP 429')) return 'Rate limited - retry later';
+  if (message.includes('HTTP 404')) return 'No match found';
+  return 'Error';
 }
 
 function generateSelectedDocument() {
@@ -149,9 +213,6 @@ function generateCombinedReport() {
   doc.saveAndClose();
 
   const url = doc.getUrl();
-
-  // Put the combined report link in E1 so it is easy to find and does not
-  // overwrite any individual row document links.
   sheet.getRange('E1').setFormula('=HYPERLINK("' + url + '","Open Combined Report")');
 
   SpreadsheetApp.getUi().alert(
@@ -174,18 +235,37 @@ function searchSemanticScholarMatch_(title) {
     '?query=' + encodeURIComponent(title) +
     '&fields=' + encodeURIComponent(fields);
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    muteHttpExceptions: true
-  });
+  const retryDelays = [0, 2000, 5000, 10000];
+  let lastResponseText = '';
+  let lastCode = 0;
 
-  const code = response.getResponseCode();
-  if (code !== 200) {
-    throw new Error('Semantic Scholar returned HTTP ' + code + ': ' + response.getContentText());
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt] > 0) {
+      Utilities.sleep(retryDelays[attempt]);
+    }
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      muteHttpExceptions: true
+    });
+
+    const code = response.getResponseCode();
+    const text = response.getContentText();
+    lastCode = code;
+    lastResponseText = text;
+
+    if (code === 200) {
+      const payload = JSON.parse(text);
+      return payload && payload.data ? payload.data[0] || null : null;
+    }
+
+    // Retry only rate-limit and temporary server errors.
+    if (code !== 429 && code < 500) {
+      throw new Error('Semantic Scholar returned HTTP ' + code + ': ' + text);
+    }
   }
 
-  const payload = JSON.parse(response.getContentText());
-  return payload && payload.data ? payload.data[0] || null : null;
+  throw new Error('Semantic Scholar returned HTTP ' + lastCode + ': ' + lastResponseText);
 }
 
 function parseCitationInput_(input) {
